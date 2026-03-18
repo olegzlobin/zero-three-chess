@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Zero-Three Chess</title>
+  <link rel="stylesheet" href="/static/app.css" />
+</head>
+<body>
+  <div class="wrap">
+    <div id="board" class="board" aria-label="Шахматная доска"></div>
+    <div class="panel">
+      <h1 class="title">Zero-Three Chess</h1>
+      <div class="kv">
+        <div class="k">Ход</div><div id="turn">—</div>
+        <div class="k">Статус</div><div id="status">—</div>
+      </div>
+      <div class="btns">
+        <button id="newGame">Новая партия</button>
+      </div>
+      <div class="color-toggle">
+        <span class="k">Сторона</span>
+        <div class="color-toggle-buttons">
+          <button id="playWhite" class="side-btn">Белыми</button>
+          <button id="playBlack" class="side-btn">Чёрными</button>
+        </div>
+      </div>
+      <div id="err" class="err"></div>
+      <div class="note">
+        Управление: клик по фигуре → клик по клетке назначения.
+      </div>
+    </div>
+  </div>
+
+  <div id="promoBackdrop" class="promo-backdrop">
+    <div class="promo-dialog">
+      <div class="promo-title">Преобразовать пешку в:</div>
+      <div id="promoChoices" class="promo-choices"></div>
+      <button id="promoCancel" class="promo-cancel">Отмена</button>
+    </div>
+  </div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
+
