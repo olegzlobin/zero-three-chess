@@ -13,7 +13,7 @@ class GameResultType(Enum):
     STALEMATE = auto()
     DRAW_MATERIAL = auto()
     DRAW_FIFTY_MOVES = auto()
-    DRAW_THREEFOLD = auto()
+    DRAW_REPETITION = auto()
     RESIGNATION = auto()
 
 
@@ -51,11 +51,11 @@ class Game:
         if self._board.is_insufficient_material():
             return GameResult(GameResultType.DRAW_MATERIAL)
 
-        if self._board.can_claim_fifty_moves():
+        if self._board.is_seventyfive_moves():
             return GameResult(GameResultType.DRAW_FIFTY_MOVES)
 
-        if self._board.can_claim_threefold_repetition():
-            return GameResult(GameResultType.DRAW_THREEFOLD)
+        if self._board.is_repetition(3):
+            return GameResult(GameResultType.DRAW_REPETITION)
 
         return None
 

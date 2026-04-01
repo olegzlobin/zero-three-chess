@@ -15,14 +15,52 @@
         <div class="k">Ход</div><div id="turn">—</div>
         <div class="k">Статус</div><div id="status">—</div>
       </div>
+      <div class="eval-block">
+        <div class="eval-label-row">
+          <span class="k">Оценка</span>
+          <span id="evalMeta" class="eval-meta">—</span>
+        </div>
+        <div class="eval-bar">
+          <div id="evalFill" class="eval-fill"></div>
+        </div>
+      </div>
+      <div id="thinking" class="thinking-indicator" aria-live="polite"></div>
       <div class="btns">
         <button id="newGame">Новая партия</button>
+        <button id="copyPgn" type="button" disabled>Копировать PGN</button>
+        <button id="exportPgn" type="button" disabled>Скачать PGN</button>
       </div>
-      <div class="color-toggle">
-        <span class="k">Сторона</span>
-        <div class="color-toggle-buttons">
-          <button id="playWhite" class="side-btn">Белыми</button>
-          <button id="playBlack" class="side-btn">Чёрными</button>
+      <div class="players-config">
+        <div class="player-row">
+          <span class="k">Белые</span>
+          <div class="player-buttons">
+            <button id="whiteHuman" class="side-btn">Человек</button>
+            <button id="whiteRandom" class="engine-btn">Random</button>
+            <button id="whiteMaterial" class="engine-btn">Material</button>
+            <button id="whitePositional" class="engine-btn">Positional</button>
+          </div>
+        </div>
+        <div class="player-row">
+          <span class="k">Чёрные</span>
+          <div class="player-buttons">
+            <button id="blackHuman" class="side-btn">Человек</button>
+            <button id="blackRandom" class="engine-btn">Random</button>
+            <button id="blackMaterial" class="engine-btn">Material</button>
+            <button id="blackPositional" class="engine-btn">Positional</button>
+          </div>
+        </div>
+      </div>
+      <div class="depth-toggle">
+        <span class="k">Глубина</span>
+        <div class="depth-toggle-buttons">
+          <button id="depth1" class="depth-btn">1</button>
+          <button id="depth2" class="depth-btn">2</button>
+          <button id="depth3" class="depth-btn">3</button>
+          <button id="depth4" class="depth-btn">4</button>
+          <button id="depth5" class="depth-btn">5</button>
+          <button id="depth6" class="depth-btn">6</button>
+          <button id="depth7" class="depth-btn">7</button>
+          <button id="depth8" class="depth-btn">8</button>
         </div>
       </div>
       <div id="err" class="err"></div>
