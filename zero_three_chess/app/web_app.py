@@ -47,6 +47,7 @@ class AppState:
     last_eval_depth: Optional[int]
     last_eval_nodes: Optional[int]
     search_depth: int
+    search_nodes: Optional[int]
 
 
 def _engine_player_for_color(app: AppState, color: chess.Color) -> EnginePlayer:
@@ -96,9 +97,8 @@ def _build_pgn(app: AppState) -> str:
     return str(game)
 
 
-def _state_payload(app: AppState) -> dict:
+def _pieces_payload(board: chess.Board) -> dict[str, dict[str, str]]:
     pieces: dict[str, dict[str, str]] = {}
-    board = app.game.board
     for square in chess.SQUARES:
         piece = board.piece_at(square)
         if piece is None:
@@ -118,6 +118,12 @@ def _state_payload(app: AppState) -> dict:
             "glyph": UNICODE_PIECES[piece.piece_type][piece.color],
             "code": f"{code_color}{code_type}",
         }
+    return pieces
+
+
+def _state_payload(app: AppState) -> dict:
+    board = app.game.board
+    pieces = _pieces_payload(board)
 
     turn_color = "white" if board.turn == chess.WHITE else "black"
     turn_text = "Белые" if board.turn == chess.WHITE else "Чёрные"
@@ -166,6 +172,7 @@ def _state_payload(app: AppState) -> dict:
         "eval_depth": app.last_eval_depth,
         "eval_nodes": app.last_eval_nodes,
         "search_depth": app.search_depth,
+        "search_nodes": app.search_nodes,
     }
 
 
@@ -180,9 +187,13 @@ def _play_engine_move_once(app: AppState) -> None:
             return
         snap_fen = app.game.board.fen()
         search_depth = app.search_depth
+        search_nodes = app.search_nodes
         engine_player = _engine_player_for_color(app, color)
         board_copy = app.game.board.copy(stack=True)
-    limit = SearchLimit(depth=search_depth)
+    if search_nodes is not None and search_nodes > 0:
+        limit = SearchLimit(nodes=search_nodes)
+    else:
+        limit = SearchLimit(depth=search_depth)
     result = engine_player._engine.select(board_copy, limit)
     move = result.best_move
 
@@ -326,7 +337,10 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Ожидается color = 'white' или 'black'"})
             return
         if kind not in ("human", "random", "material", "positional"):
-            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Ожидается kind = 'human' | 'random' | 'material' | 'positional'"})
+            self._send_json(
+                HTTPStatus.BAD_REQUEST,
+                {"error": "Ожидается kind = 'human' | 'random' | 'material' | 'positional'"},
+            )
             return
 
         with self._app.lock:
@@ -376,6 +390,7 @@ class Handler(BaseHTTPRequestHandler):
 
         with self._app.lock:
             self._app.search_depth = depth
+            self._app.search_nodes = None
             self._app.game = Game()
             self._app.selected_square = None
             self._app.last_eval_cp = None
@@ -384,6 +399,30 @@ class Handler(BaseHTTPRequestHandler):
         _auto_play_engines(self._app, max_plies=1)
         with self._app.lock:
             self._send_json(HTTPStatus.OK, _state_payload(self._app))
+
+    def _handle_post_set_nodes(self) -> None:
+        try:
+            data = self._read_json()
+        except ValueError as e:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": str(e)})
+            return
+
+        nodes = data.get("nodes")
+        if not isinstance(nodes, int) or nodes <= 0 or nodes > 5_000_000:
+            self._send_json(HTTPStatus.BAD_REQUEST, {"error": "Ожидается целое nodes от 1 до 5000000"})
+            return
+
+        with self._app.lock:
+            self._app.search_nodes = nodes
+            self._app.game = Game()
+            self._app.selected_square = None
+            self._app.last_eval_cp = None
+            self._app.last_eval_depth = None
+            self._app.last_eval_nodes = None
+        _auto_play_engines(self._app, max_plies=1)
+        with self._app.lock:
+            self._send_json(HTTPStatus.OK, _state_payload(self._app))
+
 
     def _handle_post_click(self) -> None:
         try:
@@ -521,6 +560,7 @@ class Handler(BaseHTTPRequestHandler):
             "/api/set-side": self._handle_post_set_side,
             "/api/set-engine": self._handle_post_set_engine,
             "/api/set-depth": self._handle_post_set_depth,
+            "/api/set-nodes": self._handle_post_set_nodes,
         }
         handler = routes.get(path)
         if handler is not None:
@@ -553,6 +593,7 @@ def main(host: str = "127.0.0.1", port: int = 8000, open_browser: bool = True) -
         last_eval_depth=None,
         last_eval_nodes=None,
         search_depth=3,
+        search_nodes=None,
     )
 
     server = ChessServer((host, port), app_state)

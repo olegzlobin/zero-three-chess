@@ -18,6 +18,9 @@ _ORDERING_PIECE_VALUES: dict[int, int] = {
 }
 
 _MAX_KILLER_DEPTH = 64
+_INF = 10_000_000
+_LMR_MIN_DEPTH = 4
+_LMR_BASE_MOVE_INDEX = 6
 
 
 def _board_tt_key(board: chess.Board) -> int:
@@ -61,6 +64,8 @@ class NegamaxSearchEngine(Engine, ABC):
         self._tt: dict[tuple[int, int], tuple[int, int, list[chess.Move]]] = {}
         self._killers: list[list[Optional[chess.Move]]] = [[None, None] for _ in range(_MAX_KILLER_DEPTH)]
         self._history: dict[tuple[int, int], int] = {}
+        self._node_budget: Optional[int] = None
+        self._nodes_used = 0
 
     @abstractmethod
     def _evaluate(self, board: chess.Board) -> int:
@@ -88,6 +93,49 @@ class NegamaxSearchEngine(Engine, ABC):
         key = (move.from_square, move.to_square)
         self._history[key] = self._history.get(key, 0) + depth * depth
 
+    def _policy_prior(self, board: chess.Board, move: chess.Move) -> float:
+        return 0.0
+
+    def _budget_reached(self) -> bool:
+        return self._node_budget is not None and self._nodes_used >= self._node_budget
+
+    def _select_moves_for_node(
+        self, board: chess.Board, ordered: list[chess.Move], depth: int
+    ) -> list[chess.Move]:
+        if not ordered:
+            return ordered
+        if self._node_budget is None or depth <= 1:
+            return ordered
+        nodes_left = self._node_budget - self._nodes_used
+        if nodes_left <= 0:
+            return []
+        k = max(4, min(len(ordered), nodes_left // max(8, depth * 4)))
+        if k >= len(ordered):
+            return ordered
+
+        selected: list[chess.Move] = []
+        selected_set: set[chess.Move] = set()
+        principal = ordered[0]
+        selected.append(principal)
+        selected_set.add(principal)
+        for move in ordered:
+            tactical = board.is_capture(move) or move.promotion is not None or board.gives_check(move)
+            if tactical:
+                selected.append(move)
+                selected_set.add(move)
+
+        remaining = [m for m in ordered if m not in selected_set]
+        remaining.sort(key=lambda m: self._policy_prior(board, m), reverse=True)
+        for move in remaining:
+            if len(selected) >= k:
+                break
+            selected.append(move)
+            selected_set.add(move)
+
+        if not selected:
+            return ordered[:k]
+        return selected
+
     def _ordered_moves(
         self,
         board: chess.Board,
@@ -105,7 +153,10 @@ class NegamaxSearchEngine(Engine, ABC):
             else:
                 quiets.append(m)
 
-        captures.sort(key=lambda m: _mvv_lva_score(board, m), reverse=True)
+        captures.sort(
+            key=lambda m: (_mvv_lva_score(board, m), self._policy_prior(board, m)),
+            reverse=True,
+        )
 
         killer_depth = depth
         if 0 < killer_depth < _MAX_KILLER_DEPTH:
@@ -123,7 +174,10 @@ class NegamaxSearchEngine(Engine, ABC):
             else:
                 rest_quiets.append(m)
 
-        rest_quiets.sort(key=lambda m: self._history_score(m), reverse=True)
+        rest_quiets.sort(
+            key=lambda m: (self._policy_prior(board, m), self._history_score(m)),
+            reverse=True,
+        )
         ordered.extend(captures)
         ordered.extend(killer_quiets)
         ordered.extend(rest_quiets)
@@ -137,7 +191,10 @@ class NegamaxSearchEngine(Engine, ABC):
     def select(self, board: chess.Board, limit: SearchLimit | None = None) -> EngineResult:
         self._reset_move_ordering()
         self._tt.clear()
+        self._node_budget = limit.nodes if limit is not None else None
+        self._nodes_used = 0
 
+        unlimited_depth_by_nodes = limit is not None and limit.depth is None and limit.nodes is not None
         search_depth = limit.depth if limit and limit.depth is not None else self._config.max_depth
         if search_depth <= 0:
             search_depth = 1
@@ -149,12 +206,27 @@ class NegamaxSearchEngine(Engine, ABC):
         best_pv: list[chess.Move] = []
         nodes = 0
         hint: Optional[chess.Move] = None
-        for d in range(1, search_depth + 1):
-            score, best_move, n, best_pv = self._negamax_root(
-                board, depth=d, color_sign=color_sign, root_first=hint
-            )
-            nodes += n
-            hint = best_move
+        reached_depth = 0
+        if unlimited_depth_by_nodes:
+            d = 1
+            while not self._budget_reached():
+                score, best_move, n, best_pv = self._negamax_root(
+                    board, depth=d, color_sign=color_sign, root_first=hint
+                )
+                nodes += n
+                hint = best_move
+                reached_depth = d
+                d += 1
+        else:
+            for d in range(1, search_depth + 1):
+                if self._budget_reached():
+                    break
+                score, best_move, n, best_pv = self._negamax_root(
+                    board, depth=d, color_sign=color_sign, root_first=hint
+                )
+                nodes += n
+                hint = best_move
+                reached_depth = d
 
         if best_move is None:
             legal_moves = list(board.legal_moves)
@@ -165,8 +237,8 @@ class NegamaxSearchEngine(Engine, ABC):
         return EngineResult(
             best_move=best_move,
             score_cp=score,
-            depth=search_depth,
-            nodes=nodes,
+            depth=reached_depth,
+            nodes=self._nodes_used if self._node_budget is not None else nodes,
             pv=tuple(best_pv),
         )
 
@@ -196,17 +268,36 @@ class NegamaxSearchEngine(Engine, ABC):
         color_sign: int,
         root_first: Optional[chess.Move] = None,
     ) -> tuple[int, Optional[chess.Move], int, list[chess.Move]]:
-        alpha = -10_000_000
-        beta = 10_000_000
-        best_score = -10_000_000
+        alpha = -_INF
+        beta = _INF
+        best_score = -_INF
         best_move: Optional[chess.Move] = None
         best_pv: list[chess.Move] = []
         nodes = 0
 
-        for move in self._ordered_moves(board, depth, prefer_first=root_first):
+        ordered = self._ordered_moves(board, depth, prefer_first=root_first)
+        moves = self._select_moves_for_node(board, ordered, depth)
+        for i, move in enumerate(moves):
+            if self._budget_reached():
+                break
             board.push(move)
-            score, child_nodes, child_pv = self._negamax(board, depth - 1, -beta, -alpha, -color_sign)
-            score = -score
+            if i == 0:
+                score, child_nodes, child_pv = self._negamax(
+                    board, depth - 1, -beta, -alpha, -color_sign
+                )
+                score = -score
+            else:
+                score, child_nodes, child_pv = self._negamax(
+                    board, depth - 1, -alpha - 1, -alpha, -color_sign
+                )
+                score = -score
+                if score > alpha:
+                    full_score, extra_nodes, full_pv = self._negamax(
+                        board, depth - 1, -beta, -alpha, -color_sign
+                    )
+                    score = -full_score
+                    child_nodes += extra_nodes
+                    child_pv = full_pv
             nodes += child_nodes + 1
             board.pop()
 
@@ -232,6 +323,9 @@ class NegamaxSearchEngine(Engine, ABC):
         color_sign: int,
     ) -> tuple[int, int, list[chess.Move]]:
         nodes = 0
+        if self._budget_reached():
+            return self._leaf_eval_score(board, color_sign), nodes, []
+        self._nodes_used += 1
 
         if (
             depth == 0
@@ -245,14 +339,68 @@ class NegamaxSearchEngine(Engine, ABC):
         if cached is not None:
             return cached
 
-        best_score = -10_000_000
+        in_check = board.is_check()
+
+        best_score = -_INF
         best_pv: list[chess.Move] = []
 
-        for move in self._ordered_moves(board, depth):
+        ordered = self._ordered_moves(board, depth)
+        moves = self._select_moves_for_node(board, ordered, depth)
+        for i, move in enumerate(moves):
+            if self._budget_reached():
+                break
             quiet_for_killer = not board.is_capture(move) and move.promotion is None
+            gives_check = board.gives_check(move)
+
             board.push(move)
-            score, child_nodes, child_pv = self._negamax(board, depth - 1, -beta, -alpha, -color_sign)
-            score = -score
+            reduction = 0
+            if (
+                depth >= _LMR_MIN_DEPTH
+                and i >= _LMR_BASE_MOVE_INDEX
+                and quiet_for_killer
+                and not in_check
+                and not gives_check
+            ):
+                reduction = 1
+                if depth >= 6 and i >= 12:
+                    reduction = 2
+
+            if i == 0:
+                score, child_nodes, child_pv = self._negamax(
+                    board, depth - 1, -beta, -alpha, -color_sign
+                )
+                score = -score
+            else:
+                if reduction > 0:
+                    score, child_nodes, child_pv = self._negamax(
+                        board,
+                        depth - 1 - reduction,
+                        -alpha - 1,
+                        -alpha,
+                        -color_sign,
+                    )
+                else:
+                    score, child_nodes, child_pv = self._negamax(
+                        board,
+                        depth - 1,
+                        -alpha - 1,
+                        -alpha,
+                        -color_sign,
+                    )
+                score = -score
+
+                if score > alpha:
+                    full_score, extra_nodes, full_pv = self._negamax(
+                        board,
+                        depth - 1,
+                        -beta,
+                        -alpha,
+                        -color_sign,
+                    )
+                    score = -full_score
+                    child_nodes += extra_nodes
+                    child_pv = full_pv
+
             nodes += child_nodes + 1
             board.pop()
 

@@ -198,6 +198,14 @@ button:hover{ filter:brightness(1.07); }
   gap:8px;
   margin-top:6px;
 }
+.depth-toggle-buttons input{
+  width: 92px;
+  background:#22283e;
+  color:var(--text);
+  border:1px solid rgba(255,255,255,.12);
+  border-radius:10px;
+  padding:6px 8px;
+}
 .depth-btn{
   flex:1 1 0;
   padding:4px 6px;
@@ -284,4 +292,5 @@ button:hover{ filter:brightness(1.07); }
   font-weight:500;
   cursor:pointer;
 }
+
 

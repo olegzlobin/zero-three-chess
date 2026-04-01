@@ -23,6 +23,8 @@ const depthButtons = {
   7: document.getElementById('depth7'),
   8: document.getElementById('depth8'),
 };
+const nodesInputEl = document.getElementById('nodesInput');
+const applyNodesBtn = document.getElementById('applyNodes');
 const evalMetaEl = document.getElementById('evalMeta');
 const evalFillEl = document.getElementById('evalFill');
 const thinkingEl = document.getElementById('thinking');
@@ -34,6 +36,7 @@ let promoTarget = null;
 let lastState = null;
 let busy = false;
 let refreshInFlight = null;
+const boardSquares = new Map();
 
 function sqName(file, rank){ return String.fromCharCode(97+file) + String(rank+1); }
 
@@ -53,7 +56,80 @@ async function api(path, body){
   return data;
 }
 
+async function handleSquareClick(name){
+  if(busy) return;
+  if(lastState){
+    const tc = lastState.turn_color;
+    const sideKind = tc === 'white' ? lastState.white_kind : lastState.black_kind;
+    if(!lastState.finished && sideKind !== 'human') return;
+  }
+  try{
+    busy = true;
+    boardEl.classList.add('busy');
+    const res = await api('/api/click', {square: name});
+    if(res && res.promotion_required){
+      promoTarget = name;
+      promoChoicesEl.innerHTML = '';
+      const fromSq = res.promotion_from;
+      let colorCode = 'w';
+      if(lastState && lastState.pieces && lastState.pieces[fromSq] && lastState.pieces[fromSq].code){
+        colorCode = lastState.pieces[fromSq].code[0] === 'b' ? 'b' : 'w';
+      }
+      (res.promotion_choices || ['q','r','b','n']).forEach(code => {
+        const btn = document.createElement('button');
+        const letter = code.toUpperCase();
+        const imgCode = colorCode + letter;
+        btn.className = 'promo-piece-btn';
+        btn.dataset.piece = imgCode;
+        btn.textContent = letter;
+        btn.setAttribute('aria-label', letter);
+        btn.style.backgroundImage = `url('/static/pieces/${imgCode}.png')`;
+        btn.addEventListener('click', async () => {
+          promoBackdrop.style.display = 'none';
+          try{
+            const afterPromo = await api('/api/click', {square: promoTarget, promotion: code});
+            render(afterPromo);
+          }finally{
+            promoTarget = null;
+          }
+        });
+        promoChoicesEl.appendChild(btn);
+      });
+      promoBackdrop.style.display = 'flex';
+    }else{
+      render(res);
+    }
+  }catch(e){
+    errEl.textContent = e.message;
+    errEl.textContent = e.message;
+  }finally{
+    busy = false;
+    boardEl.classList.remove('busy');
+  }
+}
+
+function initBoardIfNeeded(){
+  if(boardSquares.size === 64) return;
+  boardEl.innerHTML = '';
+  const humanIsWhite = true;
+  for(let rIndex=0;rIndex<8;rIndex++){
+    const rank = humanIsWhite ? (7 - rIndex) : rIndex;
+    for(let fIndex=0;fIndex<8;fIndex++){
+      const file = humanIsWhite ? fIndex : (7 - fIndex);
+      const light = ((rIndex + fIndex) % 2) === 0;
+      const sq = document.createElement('div');
+      sq.className = 'sq ' + (light ? 'light' : 'dark');
+      const name = sqName(file, rank);
+      sq.dataset.square = name;
+      sq.addEventListener('click', () => { handleSquareClick(name); });
+      boardSquares.set(name, sq);
+      boardEl.appendChild(sq);
+    }
+  }
+}
+
 function render(state){
+  initBoardIfNeeded();
   lastState = state;
   turnEl.textContent = state.turn_text;
   statusEl.textContent = state.status_text;
@@ -120,8 +196,18 @@ function render(state){
   }
 
   Object.values(depthButtons).forEach(btn => btn.classList.remove('depth-btn-active'));
-  if(typeof state.search_depth === 'number' && depthButtons[state.search_depth]){
+  if((state.search_nodes === null || state.search_nodes === undefined)
+      && typeof state.search_depth === 'number'
+      && depthButtons[state.search_depth]){
     depthButtons[state.search_depth].classList.add('depth-btn-active');
+  }
+  if(
+    nodesInputEl
+    && document.activeElement !== nodesInputEl
+    && typeof state.search_nodes === 'number'
+    && state.search_nodes > 0
+  ){
+    nodesInputEl.value = String(state.search_nodes);
   }
 
   if(copyPgnBtn){
@@ -131,123 +217,59 @@ function render(state){
     exportPgnBtn.disabled = !state.finished;
   }
 
-  boardEl.innerHTML = '';
-  const humanIsWhite = true; // белые всегда внизу
-
-  for(let rIndex=0;rIndex<8;rIndex++){
-    const rank = humanIsWhite ? (7 - rIndex) : rIndex;
-    for(let fIndex=0;fIndex<8;fIndex++){
-      const file = humanIsWhite ? fIndex : (7 - fIndex);
-      const light = ((rIndex + fIndex) % 2) === 0;
-      const sq = document.createElement('div');
-      sq.className = 'sq ' + (light ? 'light' : 'dark');
-      const name = sqName(file, rank);
-      sq.dataset.square = name;
-      const cell = state.pieces[name];
-      if(cell){
-        sq.textContent = cell.glyph || '';
-        if(cell.code){
-          sq.dataset.piece = cell.code;
-        }
-      }else{
-        sq.textContent = '';
+  for(const [name, sq] of boardSquares.entries()){
+    sq.classList.remove('selected', 'legal', 'occupied', 'last-move-from', 'last-move-to', 'icon');
+    delete sq.dataset.piece;
+    const cell = state.pieces[name];
+    if(cell){
+      sq.textContent = cell.glyph || '';
+      if(cell.code){
+        sq.dataset.piece = cell.code;
       }
-      if(state.selected === name) sq.classList.add('selected');
-      if(state.legal_targets && state.legal_targets.includes(name)){
-        sq.classList.add('legal');
+      sq.classList.add('occupied');
+    }else{
+      sq.textContent = '';
+    }
+    if(state.selected === name) sq.classList.add('selected');
+    if(state.legal_targets && state.legal_targets.includes(name)){
+      sq.classList.add('legal');
+    }
+    if(state.last_move){
+      if(state.last_move.from === name){
+        sq.classList.add('last-move-from');
       }
-      if(cell){
-        sq.classList.add('occupied');
+      if(state.last_move.to === name){
+        sq.classList.add('last-move-to');
       }
-      if(state.last_move){
-        if(state.last_move.from === name){
-          sq.classList.add('last-move-from');
-        }
-        if(state.last_move.to === name){
-          sq.classList.add('last-move-to');
-        }
-      }
-      if(cell && cell.code){
-        const code = cell.code;
-        const cached = iconCache.get(code);
-        const url = `/static/pieces/${code}.png`;
-
-        if(cached === true){
-          sq.style.backgroundImage = `url('${url}')`;
-          sq.classList.add('icon');
-        }else if(cached === false){
-          sq.style.backgroundImage = '';
-        }else{
-          sq.style.backgroundImage = `url('${url}')`;
-          const img = new Image();
-          img.onload = () => {
-            iconCache.set(code, true);
-            sq.classList.add('icon');
-          };
-          img.onerror = () => {
-            iconCache.set(code, false);
-            sq.style.backgroundImage = '';
-          };
-          img.src = url;
-        }
-      }else{
+    }
+    if(cell && cell.code){
+      const code = cell.code;
+      const cached = iconCache.get(code);
+      const url = `/static/pieces/${code}.png`;
+      if(cached === true){
+        sq.style.backgroundImage = `url('${url}')`;
+        sq.classList.add('icon');
+      }else if(cached === false){
         sq.style.backgroundImage = '';
+      }else{
+        sq.style.backgroundImage = `url('${url}')`;
+        const img = new Image();
+        img.onload = () => {
+          iconCache.set(code, true);
+          sq.classList.add('icon');
+        };
+        img.onerror = () => {
+          iconCache.set(code, false);
+          sq.style.backgroundImage = '';
+        };
+        img.src = url;
       }
-      sq.addEventListener('click', async () => {
-        if(busy) return;
-        if(lastState){
-          const tc = lastState.turn_color;
-          const sideKind = tc === 'white' ? lastState.white_kind : lastState.black_kind;
-          if(!lastState.finished && sideKind !== 'human') return;
-        }
-        try{
-          busy = true;
-          boardEl.classList.add('busy');
-          const res = await api('/api/click', {square: name});
-          if(res && res.promotion_required){
-            promoTarget = name;
-            promoChoicesEl.innerHTML = '';
-            const fromSq = res.promotion_from;
-            let colorCode = 'w';
-            if(lastState && lastState.pieces && lastState.pieces[fromSq] && lastState.pieces[fromSq].code){
-              colorCode = lastState.pieces[fromSq].code[0] === 'b' ? 'b' : 'w';
-            }
-            (res.promotion_choices || ['q','r','b','n']).forEach(code => {
-              const btn = document.createElement('button');
-              const letter = code.toUpperCase();
-              const imgCode = colorCode + letter;
-              btn.className = 'promo-piece-btn';
-              btn.dataset.piece = imgCode;
-              btn.textContent = letter;
-              btn.setAttribute('aria-label', letter);
-              btn.style.backgroundImage = `url('/static/pieces/${imgCode}.png')`;
-              btn.addEventListener('click', async () => {
-                promoBackdrop.style.display = 'none';
-                try{
-                  const afterPromo = await api('/api/click', {square: promoTarget, promotion: code});
-                  render(afterPromo);
-                }finally{
-                  promoTarget = null;
-                }
-              });
-              promoChoicesEl.appendChild(btn);
-            });
-            promoBackdrop.style.display = 'flex';
-          }else{
-            render(res);
-          }
-        }catch(e){
-          errEl.textContent = e.message;
-          errEl.textContent = e.message;
-        }finally{
-          busy = false;
-          boardEl.classList.remove('busy');
-        }
-      });
-      boardEl.appendChild(sq);
+    }else{
+      sq.style.backgroundImage = '';
     }
   }
 }
+
 
 async function refresh(){
   if(busy) return;
@@ -375,6 +397,28 @@ Object.entries(depthButtons).forEach(([depthStr, btn]) => {
     }
   });
 });
+
+if(applyNodesBtn && nodesInputEl){
+  applyNodesBtn.addEventListener('click', async () => {
+    try{
+      if(busy) return;
+      const nodesVal = parseInt(nodesInputEl.value, 10);
+      if(!Number.isFinite(nodesVal) || nodesVal <= 0){
+        throw new Error('Введите корректное число нод');
+      }
+      busy = true;
+      boardEl.classList.add('busy');
+      const st = await api('/api/set-nodes', {nodes: nodesVal});
+      render(st);
+    }catch(e){
+      errEl.textContent = e.message;
+    }finally{
+      busy = false;
+      boardEl.classList.remove('busy');
+    }
+  });
+}
+
 
 refresh();
 setInterval(() => { fetch('/api/ping').catch(() => {}); }, 1500);
